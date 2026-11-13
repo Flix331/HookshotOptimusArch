@@ -70,7 +70,7 @@ inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint
 /// leaves the scene's textures no room under it, and then every texture out of view for a second went and came back when the
 /// camera turned: with the count held under a 7 GB allowance, a turning camera in Hyrule Field at DLAA let go of 2.3-2.6 GB of live
 /// textures every 600 presents and uploaded 6.8 GB in 50 seconds, against 1.4 GB with the compaction off
-inline constexpr uint64_t kHoldUnused = 600;
+inline constexpr uint64_t kHoldUnused = 180;
 
 /// Whether the hold's pass keeps a texture no render target has drawn over: one used in the last kHoldUnused presents
 inline bool hold_keeps(uint64_t unused) { return unused < kHoldUnused; }
@@ -82,7 +82,7 @@ inline bool hold_keeps(uint64_t unused) { return unused < kHoldUnused; }
 /// recorder running the GPU's frame went from 11 to 15-23 ms for ten seconds each time it reached 87-90%. With the reserve:
 /// over 85% for 5%, over 87% for 0-1%, peaks of 87-88%, no more uploads
 inline constexpr uint64_t kReservePoints = 5;
-inline constexpr uint64_t kReserveUnused = 1800;
+inline constexpr uint64_t kReserveUnused = 600;
 inline uint64_t reserve_pct(uint64_t pct) { return pct > kReservePoints ? pct - kReservePoints : 0; }
 
 /// What the rules that are not the hold's (the budget's size, the 90% rule, the driver's limit at 97%) ask an eviction to go down

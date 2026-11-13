@@ -2482,9 +2482,9 @@ uint64_t mirror_budget() {
         uint64_t vram = 0;
         for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
             if (dev.memory.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max(vram, (uint64_t)dev.memory.memoryHeaps[h].size);
-        // (cards of 6 GB or less only: on 8 GB ones, a 3070 or a 4060, the game's memory read over PCIe instead left the GPU at a few
-        // percent and the frame stuttering)
-        if (vram && vram <= (6ull << 30) + (512ull << 20)) return vram / 8;
+        // (cards of 6 GB or less: allocate up to 1700 MB to comfortably hold the ~1648 MB peak seen in open areas (Death Mountain, Hyrule Field)
+        // without falling back to PCIe reads, while scaling safely on 4 GB cards)
+        if (vram && vram <= (6ull << 30) + (512ull << 20)) return std::min<uint64_t>(1700ull << 20, vram / 3);
         return vram ? std::min<uint64_t>(vram / 4, 3072ull << 20) : (uint64_t)(3072ull << 20);
     }();
     // (the Insert menu's quality preset sets one, 256 MB at Minimum (4GB): it was never read, and an 8 GB card kept ~2 GB of
@@ -2733,7 +2733,8 @@ wb_learn::Table wb_table;
 int64_t st_wb_left, st_wb_left_bytes, st_wb_stale;
 uint64_t wb_cap() {
     static const uint64_t v = [] {
-        const uint64_t b = wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB"));
+        // (hookshot) Default to 1024 KB cap to prevent ~68 MB/frame of unread culling write-backs over PCIe
+        const uint64_t b = getenv("RX_VK_WB_MAX_KB") ? wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB")) : (1024ull << 10);
         wb_table.probation = (uint32_t)std::max(1, env_int("RX_VK_WB_PROBATION", (int)wb_table.probation));
         if (b) logf("vk: written bindings over %llu KB are written back only where the CPU reads or writes them, after %u submissions "
                     "whole (RX_VK_WB_MAX_KB)", (unsigned long long)(b >> 10), wb_table.probation);
@@ -3424,11 +3425,11 @@ void imports_give_back() {   // (pools_mu held)
     static const char* env_low = getenv("RX_VK_IMPORT_LOW");
     static const int cap_mb = env_int("RX_VK_IMPORT_CAP_MB", -1);
 #ifdef _WIN32
-    static const int high = std::clamp(env_int("RX_VK_IMPORT_HIGH", 0), 0, 100);
+    static const int high = std::clamp(env_int("RX_VK_IMPORT_HIGH", dev.props.vendorID == 0x10DE ? 85 : 0), 0, 100);
 #else
     static const int high = std::clamp(env_int("RX_VK_IMPORT_HIGH", 85), 0, 100);
 #endif
-    static const int low = std::clamp(env_int("RX_VK_IMPORT_LOW", 75), 10, 95);
+    static const int low = std::clamp(env_int("RX_VK_IMPORT_LOW", 70), 10, 95);
     static uint64_t calls = 0;
     if (high <= 0 || ++calls % 16) return;   // (the driver asked every 16 submissions)
     uint64_t used = 0, budget = 0;

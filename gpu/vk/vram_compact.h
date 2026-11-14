@@ -92,11 +92,13 @@ inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint
 
     // Minimum texture floor derived from GLOBAL_MIN_GRAPHICS_REQ.
     const uint64_t floor = texture_min_floor(allowed);
-    if (floor && target < floor && total >= floor) {
+    if (floor && target < floor) {
         target = floor;
     }
 
-    return std::min(budget, target);
+    uint64_t res = std::min(budget, target);
+    if (floor && res < floor) res = floor;
+    return res;
 }
 
 /// What the hold lets go of has gone unused for this many presents (ten seconds at 60 fps). The eviction's own 60 is right for a

@@ -2473,7 +2473,13 @@ namespace {
 /// budget (40: only an area load's burst; at 8 the ground's streamed textures waited a frame in ordinary play and the ground
 /// flickered, Discord 2026-11-09), 0: no deferral, as before
 bool upload_defer(const Texture& tex) {
-    static const int64_t budget_ns = (int64_t)(getenv("RX_VK_UPLOAD_BUDGET_MS") ? atof(getenv("RX_VK_UPLOAD_BUDGET_MS")) : 40.0) * 1000000;
+    // Terrain materials (layer arrays > 1 or very large surfaces) must always upload synchronously
+    // to prevent ground flickering. Only defer smaller single-layer NPC/character/prop textures.
+    const bool is_terrain = (tex.layers > 1) || (tex.width > 1024 && tex.height > 1024);
+    if (is_terrain) return false;
+
+    // Limit NPC/prop ASTC upload stalls to 12 ms per frame to protect 60 fps frame pacing (16.6 ms target)
+    static const int64_t budget_ns = (int64_t)(getenv("RX_VK_UPLOAD_BUDGET_MS") ? atof(getenv("RX_VK_UPLOAD_BUDGET_MS")) : 12.0) * 1000000;
     if (!budget_ns || !upload_defer_ok || tex.uploaded || !tex.astc || tex.gpu_written) return false;
     if (frame_upload_ns.load(std::memory_order_relaxed) < budget_ns) return false;
     st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
@@ -4122,7 +4128,7 @@ void texture_frame(uint64_t completed) {
         static const uint64_t keep = []() -> uint64_t {
             if (const char* e = getenv("RX_VK_STAGING_KEEP_MB")) return (uint64_t)atoi(e) << 20;
             uint64_t used = 0, allowed = 0;
-            return (vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 64ull : 256ull) << 20;
+            return (vram_usage(&used, &allowed) && allowed <= (6ull << 30) + (512ull << 20) ? 128ull : 256ull) << 20;
         }();
         uint64_t kept = 0;
         for (auto it = arenas.begin(); it != arenas.end();) {
@@ -4311,14 +4317,15 @@ void texture_frame(uint64_t completed) {
         kept_only = vram_compact::kept_only(pool_blocks, pool_kept);
     }
     const uint64_t pressure = by_blocks ? used : used - std::min(used, reclaim);
-    pool_pressed = known && pressure > allowed / 10 * 9;   // (the target pool given back meanwhile)
-    compact.pressed = known && vram_compact::pressed(used, allowed);   // (hookshot, RX_VK_COMPACT: by the driver's own count)
+    const uint64_t effective = allowed + vram_compact::shared_vram_headroom(allowed);
+    pool_pressed = known && pressure > effective / 10 * 9;   // (the target pool given back meanwhile)
+    compact.pressed = known && vram_compact::pressed(used, effective);   // (hookshot, RX_VK_COMPACT: by the driver's own count)
     const uint64_t size_budget = budget;   // (the budget as a size, before the rules that take an excess off it: rule_target)
-    if (known && pressure > allowed / 10 * 9) {
-        const uint64_t over = pressure - allowed / 10 * 9;
+    if (known && pressure > effective / 10 * 9) {
+        const uint64_t over = pressure - effective / 10 * 9;
         const uint64_t floor = vram_compact::texture_min_floor(allowed);
         uint64_t cut = total_bytes > over ? total_bytes - over : 0;
-        if (floor && cut < floor && total_bytes >= floor) cut = floor;
+        if (floor && cut < floor) cut = floor;
         budget = std::min(budget, cut);
     }
     // (hookshot, RX_VK_COMPACT: what the budget's size and the 90% rule ask on their own, before the hold's lines; the 97%
@@ -4357,11 +4364,11 @@ void texture_frame(uint64_t completed) {
     // (nor while the textures' pool is down to its blocks made at the start, which VMA keeps: what this evicts would leave the
     // count as it is, the same ratchet, past the allowance too: there no eviction can bring the count down (#2711).
     // RX_VK_SQUEEZE_ALWAYS=1 squeezes there too)
-    if (known && !by_blocks && !(kept_only && !squeeze_always) && used > allowed / 100 * 97 && !room_in_blocks) {
-        const uint64_t over = used - allowed / 100 * 97;
+    if (known && !by_blocks && !(kept_only && !squeeze_always) && used > effective / 100 * 97 && !room_in_blocks) {
+        const uint64_t over = used - effective / 100 * 97;
         const uint64_t floor = vram_compact::texture_min_floor(allowed);
         uint64_t cut = total_bytes > over ? total_bytes - over : 0;
-        if (floor && cut < floor && total_bytes >= floor) cut = floor;
+        if (floor && cut < floor) cut = floor;
         budget = std::min(budget, cut);
         rule_budget = std::min(rule_budget, cut);
     }

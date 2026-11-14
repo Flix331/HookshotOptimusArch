@@ -57,12 +57,46 @@ inline uint64_t reclaimable(uint64_t block_free, uint64_t pool_free) { return st
 
 /// The texture budget that holds the count, as it will be once a run has given `reclaim` back, at pct% of the allowance:
 /// what the textures hold (total) less the excess, and never more than the budget was
+/// Global minimum graphics memory requirement for the game (~8 GB, matching Switch 2 UMA footprint).
+inline constexpr uint64_t GLOBAL_MIN_GRAPHICS_REQ = 8192ull << 20;
+
+/// Dynamic shared VRAM headroom on constrained GPUs (< 8 GB).
+/// Bridges the deficit using up to 2.5 GB of WDDM shared memory to match native console memory headroom.
+inline uint64_t shared_vram_headroom(uint64_t allowed) {
+    if (!allowed || allowed >= GLOBAL_MIN_GRAPHICS_REQ) return 0;
+    const uint64_t deficit = GLOBAL_MIN_GRAPHICS_REQ - allowed;
+    return std::min<uint64_t>(deficit, 2560ull << 20);
+}
+
+/// Sane texture working set floor to prevent thrashing and downward budget ratcheting.
+/// Preserves a 1800 MB baseline on < 8 GB cards for complex open-world scenes (e.g. Kokiri Forest, Hyrule Field).
+inline uint64_t texture_min_floor(uint64_t allowed) {
+    if (!allowed) return 0;
+    if (allowed < GLOBAL_MIN_GRAPHICS_REQ) return 1800ull << 20;
+    return std::max<uint64_t>(1800ull << 20, allowed / 4);
+}
+
+/// The texture budget with dynamic shared headroom and damped contraction.
 inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint64_t reclaim, uint64_t allowed, uint64_t pct) {
-    const uint64_t line = allowed / 100 * pct;
+    const uint64_t headroom = shared_vram_headroom(allowed);
+    const uint64_t effective_allowed = allowed + headroom;
+
+    const uint64_t line = effective_allowed / 100 * pct;
     const uint64_t pressure = used - std::min(used, reclaim);
     if (!allowed || pressure <= line) return budget;
+
     const uint64_t over = pressure - line;
-    return std::min(budget, total > over ? total - over : 0);
+    // Damped contraction (alpha = 0.25) when operating with shared headroom to smoothly absorb transient frame spikes.
+    const uint64_t damped_over = (headroom > 0) ? (over / 4) : over;
+    uint64_t target = total > damped_over ? total - damped_over : 0;
+
+    // Minimum texture floor derived from GLOBAL_MIN_GRAPHICS_REQ.
+    const uint64_t floor = texture_min_floor(allowed);
+    if (floor && target < floor && total >= floor) {
+        target = floor;
+    }
+
+    return std::min(budget, target);
 }
 
 /// What the hold lets go of has gone unused for this many presents (ten seconds at 60 fps). The eviction's own 60 is right for a

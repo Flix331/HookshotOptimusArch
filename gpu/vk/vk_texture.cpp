@@ -4206,9 +4206,9 @@ void texture_frame(uint64_t completed) {
     if (frame_no % 10) return;
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
-    if (!own)   // (RX_VK_VRAM_MB, else 70% of what the driver allows the process at the first look)
+    if (!own)   // (RX_VK_VRAM_MB, else dynamic budget from GLOBAL_MIN_GRAPHICS_REQ: 42% on < 8GB, 45% on 8GB, 70% on larger cards)
         own = getenv("RX_VK_VRAM_MB") ? (uint64_t)atoi(getenv("RX_VK_VRAM_MB")) << 20
-        : known ? std::min<uint64_t>(allowed / 100 * (allowed <= (6144ull << 20) ? 30 : (allowed <= (8704ull << 20) ? 45 : 70)),
+        : known ? std::min<uint64_t>(allowed / 100 * (allowed < vram_compact::GLOBAL_MIN_GRAPHICS_REQ ? 42 : (allowed <= (8704ull << 20) ? 45 : 70)),
             6144ull << 20)
         : 4096ull << 20;
     // (hookshot: at most 6 GB: a 16 GB card's 10.8 GB filled up, read as a leak: 105, 106. On a card of 8 GB or less, 45% of what the
@@ -4316,7 +4316,10 @@ void texture_frame(uint64_t completed) {
     const uint64_t size_budget = budget;   // (the budget as a size, before the rules that take an excess off it: rule_target)
     if (known && pressure > allowed / 10 * 9) {
         const uint64_t over = pressure - allowed / 10 * 9;
-        budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
+        const uint64_t floor = vram_compact::texture_min_floor(allowed);
+        uint64_t cut = total_bytes > over ? total_bytes - over : 0;
+        if (floor && cut < floor && total_bytes >= floor) cut = floor;
+        budget = std::min(budget, cut);
     }
     // (hookshot, RX_VK_COMPACT: what the budget's size and the 90% rule ask on their own, before the hold's lines; the 97%
     // rule's joins it below. The hold's pass lets a texture unused for the eviction's own time go for that part, as a pass
@@ -4356,8 +4359,11 @@ void texture_frame(uint64_t completed) {
     // RX_VK_SQUEEZE_ALWAYS=1 squeezes there too)
     if (known && !by_blocks && !(kept_only && !squeeze_always) && used > allowed / 100 * 97 && !room_in_blocks) {
         const uint64_t over = used - allowed / 100 * 97;
-        budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
-        rule_budget = std::min(rule_budget, total_bytes > over ? total_bytes - over : 0);
+        const uint64_t floor = vram_compact::texture_min_floor(allowed);
+        uint64_t cut = total_bytes > over ? total_bytes - over : 0;
+        if (floor && cut < floor && total_bytes >= floor) cut = floor;
+        budget = std::min(budget, cut);
+        rule_budget = std::min(rule_budget, cut);
     }
     // (hookshot) and Windows' commit limit (RAM plus the page file): every VRAM block is charged to the process's commit, as the
     // guest's memory is. A run on an RTX 4060 Ti held private commit at the VRAM blocks plus ~21 GB the whole way (19.3 GB at the
